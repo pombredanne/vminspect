@@ -1,4 +1,4 @@
-# Copyright (c) 2016, Matteo Cafasso
+# Copyright (c) 2016-2017, Matteo Cafasso
 # All rights reserved.
 
 # Redistribution and use in source and binary forms, with or without
@@ -33,6 +33,8 @@
 
 import ntpath
 import codecs
+from collections import namedtuple
+from datetime import datetime, timedelta
 
 try:
     from hivex import Hivex, hive_types
@@ -87,9 +89,11 @@ class RegistryHive(Hivex):
     def keys(self):
         """Iterates over the hive's keys.
 
-        Yields keys in the form:
+        Yields WinRegKey namedtuples containing:
 
-            "RootKey\\Key\\...", (("ValueKey", "ValueType", ValueValue), ... )
+            path: path of the key "RootKey\\Key\\..."
+            timestamp: date and time of last modification
+            values: list of values (("ValueKey", "ValueType", ValueValue), ... )
 
         """
         for node in self.node_children(self.root()):
@@ -98,8 +102,10 @@ class RegistryHive(Hivex):
     def _visit_registry(self, node, path):
         path = ntpath.join(path, self.node_name(node))
         values = (self._parse_value(value) for value in self.node_values(node))
+        timestamp = (datetime(1601, 1, 1) + timedelta(
+            microseconds=(self.node_timestamp(node) / 10))).isoformat(' ')
 
-        yield path, tuple(values)
+        yield WinRegKey(path, timestamp, tuple(values))
 
         for child in self.node_children(node):
             yield from self._visit_registry(child, path)
@@ -112,11 +118,12 @@ class RegistryHive(Hivex):
         except RuntimeError:
             value_data = self._value_data(value)
 
-        return self.value_key(value), value_type, str(value_data)
+        return self.value_key(value), value_type, value_data
 
     def _value_data(self, value):
         """Parses binary and unidentified values."""
-        return codecs.encode(self.value_value(value)[1], 'base64')
+        return codecs.decode(
+            codecs.encode(self.value_value(value)[1], 'base64'), 'utf8')
 
 
 def registry_root(path):
@@ -140,6 +147,9 @@ def user_registries_path(fsroot, user):
 
     """
     return (p.format(fsroot, user) for p in USER_REGISTRY_PATH)
+
+
+WinRegKey = namedtuple('WinRegKey', ('path', 'timestamp', 'values'))
 
 
 VALUE_TYPES = {

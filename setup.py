@@ -1,4 +1,4 @@
-# Copyright (c) 2016, Matteo Cafasso
+# Copyright (c) 2016-2017, Matteo Cafasso
 # All rights reserved.
 
 # Redistribution and use in source and binary forms, with or without
@@ -37,7 +37,7 @@ def read(fname):
 
 setup(
     name="vminspect",
-    version="0.0.17",
+    version="0.0.22",
     author="Matteo Cafasso",
     author_email="noxdafox@gmail.com",
     description=("Virtual Machine disk inspection library"),
@@ -45,7 +45,7 @@ setup(
     license="BSD",
     packages=find_packages(),
     install_requires=[
-        'pebble',
+        'pebble>=4.0',
         'requests',
         'python-evtx'
     ],

@@ -1,4 +1,4 @@
-# Copyright (c) 2016, Matteo Cafasso
+# Copyright (c) 2016-2017, Matteo Cafasso
 # All rights reserved.
 
 # Redistribution and use in source and binary forms, with or without
@@ -33,12 +33,12 @@
 
 import logging
 from itertools import chain
-from pebble import process, thread
+from pebble import concurrent
 from pathlib import Path, PurePath
 from tempfile import NamedTemporaryFile
 
-from vminspect.filesystem import FileSystem
 from vminspect.winreg import RegistryHive, registry_root
+from vminspect.filesystem import FileSystem, hash_filesystem
 from vminspect.winreg import user_registries_path, registries_path
 
 
@@ -68,6 +68,8 @@ class DiskComparator:
         """Compares the two disks according to flags.
 
         Generates the following report:
+
+        ::
 
             {'created_files': [{'path': '/file/in/disk1/not/in/disk0',
                                 'sha1': 'sha1_of_the_file'}],
@@ -187,14 +189,14 @@ def compare_filesystems(fs0, fs1, concurrent=False):
 
     """
     if concurrent:
-        task0 = thread.concurrent(target=visit_filesystem, args=(fs0, ))
-        task1 = thread.concurrent(target=visit_filesystem, args=(fs1, ))
+        future0 = concurrent_hash_filesystem(fs0)
+        future1 = concurrent_hash_filesystem(fs1)
 
-        files0 = task0.get()
-        files1 = task1.get()
+        files0 = future0.result()
+        files1 = future1.result()
     else:
-        files0 = visit_filesystem(fs0)
-        files1 = visit_filesystem(fs1)
+        files0 = hash_filesystem(fs0)
+        files1 = hash_filesystem(fs1)
 
     return file_comparison(files0, files1)
 
@@ -285,11 +287,11 @@ def compare_registries(fs0, fs1, concurrent=False):
     hives = compare_hives(fs0, fs1)
 
     if concurrent:
-        task0 = process.concurrent(target=parse_registries, args=(fs0, hives))
-        task1 = process.concurrent(target=parse_registries, args=(fs1, hives))
+        future0 = concurrent_parse_registries(fs0, hives)
+        future1 = concurrent_parse_registries(fs1, hives)
 
-        registry0 = task0.get()
-        registry1 = task1.get()
+        registry0 = future0.result()
+        registry1 = future1.result()
     else:
         registry0 = parse_registries(fs0, hives)
         registry1 = parse_registries(fs1, hives)
@@ -305,20 +307,20 @@ def registry_comparison(registry0, registry1):
                   'deleted_values': {},
                   'modified_values': {}}
 
-    for key, values in registry1.items():
+    for key, info in registry1.items():
         if key in registry0:
-            if values != registry0[key]:
-                created, deleted, modified = compare_values(registry0[key],
-                                                            values)
+            if info[1] != registry0[key][1]:
+                created, deleted, modified = compare_values(
+                    registry0[key][1], info[1])
 
                 if created:
-                    comparison['created_values'][key] = created
+                    comparison['created_values'][key] = (info[0], created)
                 if deleted:
-                    comparison['deleted_values'][key] = deleted
+                    comparison['deleted_values'][key] = (info[0], deleted)
                 if modified:
-                    comparison['modified_values'][key] = modified
+                    comparison['modified_values'][key] = (info[0], modified)
         else:
-            comparison['created_keys'][key] = values
+            comparison['created_keys'][key] = info
 
     for key in registry0.keys():
         if key not in registry1:
@@ -382,15 +384,9 @@ def files_size(fs0, fs1, files):
     return files
 
 
-def visit_filesystem(filesystem):
-    """Utility function for running the files iterator at once.
-
-    Returns a dictionary.
-
-        {'/path/on/filesystem': 'file_hash'}
-
-    """
-    return dict(filesystem.checksums('/'))
+@concurrent.thread
+def concurrent_hash_filesystem(filesystem):
+    return hash_filesystem(filesystem)
 
 
 def parse_registries(filesystem, registries):
@@ -408,9 +404,15 @@ def parse_registries(filesystem, registries):
             registry = RegistryHive(tempfile.name)
             registry.rootkey = registry_root(path)
 
-            results.update(dict(registry.keys()))
+            results.update({k.path: (k.timestamp, k.values)
+                            for k in registry.keys()})
 
     return results
+
+
+@concurrent.process(timeout=300)
+def concurrent_parse_registries(filesystem, registries):
+    return parse_registries(filesystem, registries)
 
 
 def makedirs(path):

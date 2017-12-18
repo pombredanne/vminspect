@@ -1,4 +1,4 @@
-# Copyright (c) 2016, Matteo Cafasso
+# Copyright (c) 2016-2017, Matteo Cafasso
 # All rights reserved.
 
 # Redistribution and use in source and binary forms, with or without
@@ -32,8 +32,12 @@
 
 import os
 import re
-from guestfs import GuestFS
+import stat
+import logging
+
 from tempfile import NamedTemporaryFile
+
+from guestfs import GuestFS
 
 
 class FileSystem:
@@ -47,7 +51,8 @@ class FileSystem:
     def __init__(self, disk_path):
         self._root = None
         self._handler = GuestFS()
-        self._disk_path = disk_path
+
+        self.disk_path = disk_path
 
     def __enter__(self):
         self.mount()
@@ -79,7 +84,7 @@ class FileSystem:
         It must be called before any other method.
 
         """
-        self._handler.add_drive_opts(self._disk_path, readonly=True)
+        self._handler.add_drive_opts(self.disk_path, readonly=True)
         self._handler.launch()
 
         for mountpoint, device in self._inspect_disk():
@@ -185,6 +190,37 @@ class FileSystem:
         drive = self._handler.inspect_get_drive_mappings(self._root)[0][0]
 
         return "%s:%s" % (drive, os.path.join(*segments).replace('/', '\\'))
+
+
+def hash_filesystem(filesystem, hashtype='sha1'):
+    """Utility function for running the files iterator at once.
+
+    Returns a dictionary.
+
+        {'/path/on/filesystem': 'file_hash'}
+
+    """
+    try:
+        return dict(filesystem.checksums('/'))
+    except RuntimeError:
+        results = {}
+
+        logging.warning("Error hashing disk %s contents, iterating over files.",
+                        filesystem.disk_path)
+
+        for path in filesystem.nodes('/'):
+            try:
+                regular = stat.S_ISREG(filesystem.stat(path)['mode'])
+            except RuntimeError:
+                continue  # unaccessible node
+
+            if regular:
+                try:
+                    results[path] = filesystem.checksum(path, hashtype=hashtype)
+                except RuntimeError:
+                    logging.debug("Unable to hash %s.", path)
+
+        return results
 
 
 def posix_path(*segments):

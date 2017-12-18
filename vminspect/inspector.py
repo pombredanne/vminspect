@@ -1,4 +1,4 @@
-# Copyright (c) 2016, Matteo Cafasso
+# Copyright (c) 2016-2017, Matteo Cafasso
 # All rights reserved.
 
 # Redistribution and use in source and binary forms, with or without
@@ -33,6 +33,7 @@ import hashlib
 import logging
 import argparse
 from pathlib import Path
+from collections import OrderedDict
 from tempfile import NamedTemporaryFile
 
 from vminspect.vtscan import VTScanner
@@ -41,8 +42,8 @@ from vminspect.winevtx import WinEventLog
 from vminspect.vulnscan import VulnScanner
 from vminspect.comparator import DiskComparator
 from vminspect.timeline import FSTimeline, NTFSTimeline
-from vminspect.filesystem import FileSystem, posix_path
 from vminspect.winreg import RegistryHive, registry_root
+from vminspect.filesystem import FileSystem, hash_filesystem, posix_path
 
 
 def main():
@@ -68,8 +69,8 @@ def list_files(disk, identify=False, size=False):
 
     with FileSystem(disk) as filesystem:
         logger.debug("Listing files.")
-        files = [{'path': path, 'sha1': digest}
-                 for path, digest in filesystem.checksums('/')]
+
+        files = hash_filesystem(filesystem)
 
         if identify:
             logger.debug("Gatering file types.")
@@ -113,15 +114,11 @@ def compare_disks(disk1, disk2, identify=False, size=False, registry=False,
 
 
 def registry_command(arguments):
-    return parse_registry(arguments.hive, disk=arguments.disk)
+    return parse_registry(
+        arguments.hive, disk=arguments.disk, sort=arguments.sort)
 
 
-def parse_registry(hive, disk=None):
-    """Parses the registry hive's content and returns a dictionary.
-
-        {"RootKey\\Key\\...": (("ValueKey", "ValueType", ValueValue), ... )}
-
-    """
+def parse_registry(hive, disk=None, sort=False):
     if disk is not None:
         with FileSystem(disk) as filesystem:
             registry = extract_registry(filesystem, hive)
@@ -130,7 +127,12 @@ def parse_registry(hive, disk=None):
 
     registry.rootkey = registry_root(hive)
 
-    return dict(registry.keys())
+    if sort:
+        keys = sorted((k for k in registry.keys()), key=lambda k: k.timestamp)
+
+        return OrderedDict((k.path, (k.timestamp, k.values)) for k in keys)
+    else:
+        return {k.path: (k.timestamp, k.values) for k in registry.keys()}
 
 
 def extract_registry(filesystem, path):
@@ -328,6 +330,9 @@ def parse_arguments():
     registry_parser = subparsers.add_parser(
         'registry', help='Lists the content of a registry file.')
     registry_parser.add_argument('hive', type=str, help='path to hive file')
+    registry_parser.add_argument('-s', '--sort', action='store_true',
+                                 default=False,
+                                 help='sort the keys by timestamp')
     registry_parser.add_argument('-d', '--disk', type=str, default=None,
                                  help='path to disk image')
 
@@ -351,7 +356,9 @@ def parse_arguments():
 
     usnjrnl_parser = subparsers.add_parser(
         'usnjrnl', help='Parses the Update Sequence Number Journal file.')
-    usnjrnl_parser.add_argument('usnjrnl', type=str, help='path to USN file')
+    usnjrnl_parser.add_argument('-u', '--usnjrnl', type=str,
+                                default='C:\\$Extend\\$UsnJrnl',
+                                help='path to USN file')
     usnjrnl_parser.add_argument('-d', '--disk', type=str, default=None,
                                 help='path to disk image')
 
